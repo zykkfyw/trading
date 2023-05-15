@@ -977,10 +977,13 @@ def trade(symbol, filename='D:/code/python/trading_results/trading_record.xls'):
 
 if __name__ == '__main__':
     symbol = "BTC/USD"
+    symbol2 = "ETH/USD"
     # create a new thread
     thread1 = threading.Thread(target=trade(symbol))
+    thread2 = threading.Thread(target=trade(symbol2))
     # start the thread
     thread1.start()
+    thread2.start()
 
     # symbol = "BTC/USD"
     #
