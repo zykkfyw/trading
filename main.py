@@ -7,6 +7,7 @@ from alpaca.data.historical import CryptoHistoricalDataClient
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.trading.enums import AssetClass
 from datetime import datetime, timezone, timedelta
+import multiprocessing
 
 import math
 import traceback
@@ -335,7 +336,7 @@ def get_historical_prices(symbol, **kwargs):
         response = requests.get(url)
         data = response.json()
         output = json.dumps(data)
-        if "error message" in output.lower():
+        if "error" in output.lower():
             time.sleep(1 * 60)
             pass
         else:
@@ -345,7 +346,7 @@ def get_historical_prices(symbol, **kwargs):
     utc_now = datetime.now(pytz.utc)
     # format the UTC time as a string
     utc_time_str = utc_now.strftime('%Y-%m-%d %H:%M:%S %Z')
-    print(f"Iteration ...{utc_time_str}")
+    print(f"{symbol} --> Iteration ...{utc_time_str}")
 
     parse_str = 'Daily'
     if time_series == 'INTRADAY':
@@ -819,8 +820,6 @@ def manage_trades(symbol, stock_price,
     # Calculate the maximum amount of money to spend per trade
     max_amount_per_trade = account_balance * max_per_trade  # 5% of account balance
 
-
-
     # Calculate the maximum number of shares to buy
     max_shares_to_buy = int(max_amount_per_trade / stock_price)
 
@@ -897,105 +896,172 @@ def manage_trades(symbol, stock_price,
 
 # Trade
 def trade(symbol, filename='D:/code/python/trading_results/trading_record.xls'):
-    while 1:
-        try:
-            stop_loss_pct = 0.0015  # 0.00139
-            take_profit_pct = 0.003  # 0.00183
-            percent_of_pot = 0.003  # 0.00083
+    # while 1:
+    try:
+        stop_loss_pct = 0.0015  # 0.00139
+        take_profit_pct = 0.003  # 0.00183
+        percent_of_pot = 0.003  # 0.00083
 
-            offset = 0.0008  # Tmp offset so that the data matches Trading view data
+        offset = 0.0008  # Tmp offset so that the data matches Trading view data
 
-            # Check the indicator
-            df1 = trend_follower_indicator(symbol, time_series='INTRADAY', interval='30min')
+        # Check the indicator
+        df1 = trend_follower_indicator(symbol, time_series='INTRADAY', interval='30min')
 
-            # get the current symbol
-            signal = df1.iloc[-1]['signal']
-            # signal = df1.iloc[-1]['sig']
+        # get the current symbol
+        signal = df1.iloc[-1]['signal']
+        # signal = df1.iloc[-1]['sig']
 
-            # get current UTC time
-            utc_now = datetime.now(pytz.utc)
-            # format the UTC time as a string
-            utc_time_str = utc_now.strftime('%Y-%m-%d %H:%M:%S %Z')
+        # get current UTC time
+        utc_now = datetime.now(pytz.utc)
+        # format the UTC time as a string
+        utc_time_str = utc_now.strftime('%Y-%m-%d %H:%M:%S %Z')
 
-            if is_market_open(symbol):
-                message = ''
-                # current_price = get_current_price(symbol)
-                current_price = df1.iloc[-1]['close']
-                limit_price = float("{:.2f}".format(current_price))
-                offset_price = float("{:.2f}".format(limit_price * offset))
-                limit_price = float("{:.2f}".format(limit_price + offset_price))
+        if is_market_open(symbol):
+            message = ''
+            # current_price = get_current_price(symbol)
+            current_price = df1.iloc[-1]['close']
+            limit_price = float("{:.2f}".format(current_price))
+            offset_price = float("{:.2f}".format(limit_price * offset))
+            limit_price = float("{:.2f}".format(limit_price + offset_price))
 
-                if signal == 'Buy':
+            if signal == 'Buy':
 
-                    a, b, c, d, e = manage_trades(symbol, limit_price)
+                a, b, c, d, e = manage_trades(symbol, limit_price)
 
-                    # calculate stop loss and take profit prices
-                    stop_loss_price = "{:.2f}".format(limit_price * (1 - stop_loss_pct))
-                    take_profit_price = "{:.2f}".format(limit_price * (1 + take_profit_pct))
+                # calculate stop loss and take profit prices
+                actual_shares_to_buy = b
+                stop_loss_price = "{:.2f}".format(limit_price * (1 - stop_loss_pct))
+                take_profit_price = "{:.2f}".format(limit_price * (1 + take_profit_pct))
 
-                    message = f'Bought <{symbol}> @ ${limit_price} stop price = ${stop_loss_price}  take profit = ${take_profit_price} @ {utc_time_str}'
-                    print(message)
-                    pass
-                elif signal == 'Sell':
+                # Place the bracket order
+                order = api.submit_order(
+                    symbol=symbol,
+                    qty=actual_shares_to_buy,
+                    side='buy',
+                    type='limit',
+                    time_in_force='gtc',
+                    limit_price=limit_price,
+                    stop_loss=dict(
+                        stop_price=stop_loss_price,
+                        limit_price=stop_loss_price,
+                    ),
+                    take_profit=dict(
+                        limit_price=take_profit_price,
+                    ),
+                )
 
-                    a, b, c, d, e = manage_trades(symbol, limit_price)
 
-                    # calculate stop loss and take profit prices
-                    stop_loss_price = "{:.2f}".format(limit_price * (1 + stop_loss_pct))
-                    take_profit_price = "{:.2f}".format(limit_price * (1 - take_profit_pct))
-
-                    message = f'Sold <{symbol}> @ ${limit_price} stop price = ${stop_loss_price}  take profit = ${take_profit_price} @ {utc_time_str}'
-                    print(message)
-                    pass
-                else:
-                    # Debug
-                    # calculate stop loss and take profit prices
-                    # stop_loss_price = "{:.2f}".format(limit_price * (1 - stop_loss_pct))
-                    # take_profit_price = "{:.2f}".format(limit_price * (1 + take_profit_pct))
-                    # print(f'{limit_price}  ---  {take_profit_price} ---  {stop_loss_price}' )
-                    # message = f'OPEN MARKET but NO TRADE was taken @ {utc_time_str}'
-                    # print(message)
-                    pass
-                log_to_csv(filename, message)
-            else:
-                message = f'CLOSE MARKET for {symbol} so NO TRADE @ {utc_time_str}'
+                message = f'Bought <{symbol}> @ ${limit_price} stop price = ${stop_loss_price}  take profit = ${take_profit_price} @ {utc_time_str}'
                 print(message)
-                log_to_csv(filename, message)
-        except:
-            # get current UTC time
-            utc_now = datetime.now(pytz.utc)
-            # format the UTC time as a string
-            utc_time_str = utc_now.strftime('%Y-%m-%d %H:%M:%S %Z')
-            message = f'An ERROR occured .. skipping this iteration @ {utc_time_str}'
+                pass
+            elif signal == 'Sell':
+
+                a, b, c, d, e = manage_trades(symbol, limit_price)
+
+                # calculate stop loss and take profit prices
+                actual_shares_to_buy = b
+                stop_loss_price = "{:.2f}".format(limit_price * (1 + stop_loss_pct))
+                take_profit_price = "{:.2f}".format(limit_price * (1 - take_profit_pct))
+
+                # Place the bracket order
+                order = api.submit_order(
+                    symbol=symbol,
+                    qty=actual_shares_to_buy,
+                    side='sell',
+                    type='limit',
+                    time_in_force='gtc',
+                    limit_price=limit_price,
+                    stop_loss=dict(
+                        stop_price=stop_loss_price,
+                        limit_price=stop_loss_price,
+                    ),
+                    take_profit=dict(
+                        limit_price=take_profit_price,
+                    ),
+                )
+
+                message = f'Sold <{symbol}> @ ${limit_price} stop price = ${stop_loss_price}  take profit = ${take_profit_price} @ {utc_time_str}'
+                print(message)
+                pass
+            else:
+                # Debug
+                # calculate stop loss and take profit prices
+                # stop_loss_price = "{:.2f}".format(limit_price * (1 - stop_loss_pct))
+                # take_profit_price = "{:.2f}".format(limit_price * (1 + take_profit_pct))
+                # print(f'{limit_price}  ---  {take_profit_price} ---  {stop_loss_price}' )
+                # message = f'OPEN MARKET but NO TRADE was taken @ {utc_time_str}'
+                # print(message)
+                pass
+            log_to_csv(filename, message)
+        else:
+            message = f'CLOSE MARKET for {symbol} so NO TRADE @ {utc_time_str}'
             print(message)
             log_to_csv(filename, message)
-            traceback.print_exc()
-            pass
-        # pause for period in minutes / 2
-        time.sleep(30 * 60)
+    except:
+        # get current UTC time
+        utc_now = datetime.now(pytz.utc)
+        # format the UTC time as a string
+        utc_time_str = utc_now.strftime('%Y-%m-%d %H:%M:%S %Z')
+        message = f'An ERROR occured .. skipping this iteration @ {utc_time_str}'
+        print(message)
+        log_to_csv(filename, message)
+        traceback.print_exc()
+        pass
+    # pause for period in minutes / 2
+    # time.sleep(30 * 60)
 
+
+# if __name__ == "__main__":
+#     while 1:
+#         symbol = "BTC/USD"
+#         symbol2 = "ETH/USD"
+#         # creating processes
+#         p1 = multiprocessing.Process(target=trade(symbol, 'D:/code/python/trading_results/trading_record.xls' ))
+#         p2 = multiprocessing.Process(target=trade(symbol2, 'D:/code/python/trading_results/trading_record2.xls' ))
+#
+#         # starting processes
+#         p1.start()
+#         p2.start()
+#
+#         # wait until processes are finished
+#         p1.join()
+#         p2.join()
+#
+#         time.sleep(30 * 60)
 
 if __name__ == '__main__':
-    symbol = "BTC/USD"
-    symbol2 = "ETH/USD"
-    # create a new thread
-    thread1 = threading.Thread(target=trade(symbol))
-    thread2 = threading.Thread(target=trade(symbol2))
-    # start the thread
-    thread1.start()
-    thread2.start()
+    threads = []
+    set_of_assets = set()
 
-    # symbol = "BTC/USD"
-    #
-    # symbol = "SPY"
-    # df1 = trend_follower_indicator(symbol, time_series='INTRADAY', interval='15min')
-    # print(df1)
-    #
-    # symbol = "BTC/USD"
-    # df2 = trend_follower_indicator(symbol, time_series='INTRADAY', interval='15min')
-    # print(df2)
+    # Add the asset
+    set_of_assets.add("BTC/USD")
+    set_of_assets.add("ETH/USD")
+    set_of_assets.add("DOGE/USD")
 
-    pass
+    while 1:
+        for asset in set_of_assets:
+            thread = threading.Thread(
+                target=trade(asset, f'D:/code/python/trading_results/{asset.replace("/", "_")}.xls'),
+                name=f'{asset.replace("/", "_")}')
+            threads.append(thread)
+            thread.start()
+
+        for thread in threads:  # iterates over the threads
+            thread.join()  # waits until the thread has finished work
+
+        time.sleep(30 * 60)
+
+# while 1:
+#     symbol = "BTC/USD"
+#     symbol2 = "ETH/USD"
+#     # create a new thread
+#     thread1 = threading.Thread(target=trade(symbol, f'D:/code/python/trading_results/trading_record.xls' ), name='thread1')
+#     thread2 = threading.Thread(target=trade(symbol2, f'D:/code/python/trading_results/trading_record2.xls'), name='thread1')
+#     # start the thread
+#     thread1.start()
+#     thread2.start()y
+#
+#     time.sleep(30 * 60)
 
 # # Example usage
 # if __name__ == '__main__':
