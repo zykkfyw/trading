@@ -29,8 +29,8 @@ import os
 import uuid
 
 # Alpaca-py API Key
-api_key = 'PK2UYVA156FQMHCP0JCA'
-api_secret = 'biNIVI7ZU5b2gTgSR65I2C7aCDIExPXpCyLkfo6S'
+api_key = 'PKMX7R0XCGIOA2MJ2S1O'
+api_secret = 'zyqTbKJ5T6l5TrPUw004cxZ7zJyyIv2Tgi2uva2l'
 api_base_url = 'https://paper-api.alpaca.markets'
 
 # Alpha Vantage API key
@@ -38,41 +38,199 @@ ALPHA_VANTAGE_API_KEY = '53O3CQJ465X7N5BW'
 
 # Get an instance of an Alpaca trading client
 alpaca_trading_client = TradingClient(api_key, api_secret)
-# Get the Alpaca account information.
-account = alpaca_trading_client.get_account()
-# Get the account Buying Power
-MARGIN_BUYING_POWER = float(account.buying_power)
-# Get the account Buying Power
-CASH_BUYING_POWER = float(account.cash)
-# Check our current balance vs. our balance at the last market close
-DAILY_BALANCE_CHANGE = float(account.equity) - float(account.last_equity)
-# 4 percent of Margin is the total amount to use on a single trade when trading on MARGIN
-MARGIN_TO_RISK_PER_TRADE = MARGIN_BUYING_POWER * 0.02
-# 2 Percent of cash is the total amount to use on a single trade when trading on CASH
-CASH_TO_RISK_PER_TRADE = CASH_BUYING_POWER * 0.02
-# 20 percent of the account is the Maximum amount to use for all open trades
-MARGIN_RISK_ON_ALL_TRADES = MARGIN_BUYING_POWER * 0.20
-CASH_RISK_ON_ALL_TRADES = CASH_BUYING_POWER * 0.20
 
-# Set the number of periods for the short and long moving averages
-SHORT_PERIODS = 50
-LONG_PERIODS = 200
-
-# Set the amount of currency to use for each trade
-CURRENCY_AMOUNT = 1000
-
-SYMBOL = 'BTC/USD'
-
+#  Enable Logging to screen
+print_additional_log = False
 # Configure the Trend Predictor algorithm
 trend_fast_ema_period = 9
 trend_slow_ema_period = 21
 trend_macd_fast_length = 12
 trend_macd_slow_length = 26
 trend_macd_signal_length = 9
-trend_ema_length = 20
+trend_ema_length = 9
 trend_ema_offset = 0
 saved_previous_price = {}
+stop_percent = {}
+profit_percent = {}
+stop_precentage = 0.03
+profit_percentage = 0.08
 
+
+###################################
+#  Get support and resistance
+###################################
+def find_resistances(data, num_points=2, num_bars=100, support_resistence_diff=1.5):
+    df = data.copy()
+    # Start from older data
+    # try:
+    #     df['date'] = pd.to_datetime(df.index)
+    # except Exception as e:
+    #     print(e)
+    # df.sort_values(by='date', ascending=True, inplace=True)
+
+    # This will store potential resistances
+    resistances = []
+
+    for i in range(num_points, len(df) - num_bars):
+        max_close = df.iloc[i - num_points:i]['high'].max()
+        min_close = df.iloc[i:i + num_bars]['low'].min()
+
+        if min_close > max_close * support_resistence_diff:
+            resistances.append((df.index[i + num_bars], max_close))
+
+        # Convert the list of resistances to a DataFrame
+    resistances_df = pd.DataFrame(resistances, columns=['Date', 'Resistance'])
+    return resistances_df
+
+
+def find_supports(data, num_points=2, num_bars=100, support_resistence_diff=1.5):
+    df = data.copy()
+    # # Start from older data
+    # df['date'] = pd.to_datetime(df.index)
+    # df.sort_values(by='date', ascending=True, inplace=True)
+
+    # This will store potential supports
+    supports = []
+
+    for i in range(num_points, len(df) - num_bars):
+        min_close = df.iloc[i - num_points:i]['low'].min()
+        max_close = df.iloc[i:i + num_bars]['high'].max()
+
+        if max_close < min_close * support_resistence_diff:
+            supports.append((df.index[i + num_bars], min_close))
+
+        # Convert the list of supports to a DataFrame
+    supports_df = pd.DataFrame(supports, columns=['Date', 'Support'])
+    return supports_df
+
+
+####################################
+#  Super Trend Calculation
+###################################
+def calculate_atr(data, period=10):
+    high = data['high'].tolist()
+    low = data['low'].tolist()
+    close = data['close'].tolist()
+    high_low = [h - l for h, l in zip(high, low)]
+    high_close = [abs(h - c) for h, c in zip(high, [0] + close[:-1])]
+    low_close = [abs(l - c) for l, c in zip(low, [0] + close[:-1])]
+    tr = [max(hl, hc, lc) for hl, hc, lc in zip(high_low, high_close, low_close)]
+    atr = [sum(tr[i:i + period]) / period if i >= period else sum(tr[:i + 1]) / len(tr[:i + 1]) for i in range(len(tr))]
+    return atr
+
+
+def calculate_supertrend(data, period=7, multiplier=3):
+    high = data['high'].tolist()
+    low = data['low'].tolist()
+    close = data['close'].tolist()
+    hl2 = [(h + l) / 2 for h, l in zip(high, low)]
+    atr = calculate_atr(data, period)
+    upper_band = [h + (multiplier * a) for h, a in zip(hl2, atr)]
+    lower_band = [h - (multiplier * a) for h, a in zip(hl2, atr)]
+    in_uptrend = [True] * len(high)
+    for current in range(1, len(high)):
+        previous = current - 1
+        if close[current] > upper_band[previous]:
+            in_uptrend[current] = True
+        elif close[current] < lower_band[previous]:
+            in_uptrend[current] = False
+        else:
+            in_uptrend[current] = in_uptrend[previous]
+            if in_uptrend[current] and lower_band[current] < lower_band[previous]:
+                lower_band[current] = lower_band[previous]
+            if not in_uptrend[current] and upper_band[current] > upper_band[previous]:
+                upper_band[current] = upper_band[previous]
+    return in_uptrend
+
+
+def generate_super_trend_signals(data, in_uptrend):
+    signal = [''] * len(in_uptrend)
+    super_trend_latest_signal = ''
+    super_trend_signal = ''
+    for i in range(1, len(in_uptrend)):
+        if in_uptrend[i] and not in_uptrend[i - 1]:
+            signal[i] = 'buy'
+            super_trend_previous_signal = super_trend_signal
+            super_trend_signal = signal[i]
+
+        elif not in_uptrend[i] and in_uptrend[i - 1]:
+            signal[i] = 'sell'
+            super_trend_previous_signal = super_trend_signal
+            super_trend_signal = signal[i]
+        super_trend_latest_signal = signal[i]
+
+        # print(f'--> {i} <-- Signal at {data.index[i]}: = "{signal[i]}"')
+
+    return super_trend_latest_signal, super_trend_signal, super_trend_previous_signal
+
+
+#####################################
+#  PowerX Optimizer Calculation
+#####################################
+
+def calculate_MACD(df, short_span=12, long_span=26, signal_span=9):
+    exp12 = df['close'].ewm(span=short_span, adjust=False).mean()
+    exp26 = df['close'].ewm(span=long_span, adjust=False).mean()
+    macdLine = exp12 - exp26
+    signalLine = macdLine.ewm(span=signal_span, adjust=False).mean()
+    histLine = macdLine - signalLine
+    return histLine
+
+
+def calculate_RSI(df, time_window=7):
+    delta = df['close'].diff()
+    gain, loss = delta.copy(), delta.copy()
+    gain[gain < 0] = 0
+    loss[loss > 0] = 0
+    average_gain = gain.rolling(window=time_window).mean()
+    average_loss = abs(loss.rolling(window=time_window).mean())
+    rs = average_gain / average_loss
+    rsiLine = 100 - (100 / (1 + rs))
+    return rsiLine
+
+
+def calculate_StochasticOscillator(df, k_window=14, d_window=3):
+    low_min = df['low'].rolling(window=k_window).min()
+    high_max = df['high'].rolling(window=k_window).max()
+    k = 100 * ((df['close'] - low_min) / (high_max - low_min))
+    stochLine = k.rolling(window=d_window).mean()
+    return stochLine
+
+
+def assign_trend(df):
+    trend_conditions = [
+        df['signal'] == 'buy',
+        df['signal'] == 'sell',
+        df['signal'] == 'none'
+    ]
+    trend_choices = ['buy', 'sell', 'none']
+    df['trend'] = np.select(trend_conditions, trend_choices)
+    return df['trend']
+
+
+def get_powerx(df, histLine, rsiLine, stochLine):
+    conditions = [
+        (histLine > 0) & (rsiLine > 50) & (stochLine > 50),
+        (histLine <= 0) & (rsiLine <= 50) & (stochLine <= 50)
+    ]
+    choices = ['buy', 'sell']
+    df['signal'] = np.select(conditions, choices, default='')
+    return df
+
+
+def generate_powerx_signal(data):
+    histLine = calculate_MACD(data)
+    rsiLine = calculate_RSI(data)
+    stochLine = calculate_StochasticOscillator(data)
+    df = get_powerx(data, histLine, rsiLine, stochLine)
+    signal = assign_trend(df)
+    signal = signal.iloc[-1]
+    return signal
+
+
+########################################
+#  Helper functions
+########################################
 
 def log_to_csv(filename, message):
     # get current time
@@ -93,6 +251,23 @@ def log_to_csv(filename, message):
         csv_writer.writerow([now, message])
 
 
+def get_assets_from_csv(filename='assets_to_trade.csv'):
+    spdict = {}
+    ppdict = {}
+    file = open(filename, "r")
+    data = list(csv.DictReader(file, delimiter=","))
+    print(data)
+    file.close()
+    symbols = [str(row["symbol"]) for row in data]
+    for row in data:
+        spdict[str(row["symbol"])] = str(row["stop_percent"])
+        ppdict[str(row["symbol"])] = str(row["profit_percent"])
+    return symbols, spdict, ppdict
+
+
+###############################################
+#  Alpaca API functions
+###############################################
 def get_security_type(ticker_symbol):
     try:
         asset = alpaca_trading_client.get_asset(ticker_symbol)
@@ -136,81 +311,6 @@ def can_be_fractionally_traded(ticker_symbol):
     except Exception as e:
         print(f"Error retrieving asset information: {e}")
         return False
-
-
-# Define a function to get the historical prices of the symbol
-def calculate_macd(symbol, interval='60min', fastpariod=26, slowperiod=100, signalperiod=5, type='close'):
-    # Remove the '/' from Crypto name such as BTC/USD and convert to BTCUSD
-    ticker_symbol = symbol.replace("/", "")
-    # Build the API request string
-    url = f'https://www.alphavantage.co/query?function=MACD&symbol={ticker_symbol}&interval={interval}' \
-          f'&fastperiod={fastpariod}&slowperiod={slowperiod}&signalperiod={signalperiod}' \
-          f'&series_type={type}&apikey={ALPHA_VANTAGE_API_KEY}'
-    # Send the request
-    response = requests.get(url)
-    data = response.json()
-    # Get the result data
-    df = pd.DataFrame.from_dict(data[f'Technical Analysis: MACD'], orient='index')
-
-    df = df.astype(float)
-    MACD = df['MACD']
-    MACD_Signal = df['MACD_Signal']
-    MACD_Hist = df['MACD_Hist']
-    return MACD, MACD_Signal, MACD_Hist
-
-
-# Define a function to calculate the EMA for a given number of periods
-def calculate_ema(symbol, period=200, interval='60min', type='close'):
-    # Remove the '/' from Crypto name such as BTC/USD and convert to BTCUSD
-    ticker_symbol = symbol.replace("/", "")
-    # Build the API request string
-    url = f'https://www.alphavantage.co/query?function=EMA&symbol={ticker_symbol}&interval={interval}' \
-          f'&time_period={period}&series_type={type}&apikey={ALPHA_VANTAGE_API_KEY}'
-    # Send the request
-    response = requests.get(url)
-    data = response.json()
-    # Get the result data
-    df = pd.DataFrame.from_dict(data[f'Technical Analysis: EMA'], orient='index')
-
-    df = df.astype(float)
-    ema = df['EMA']
-    return ema
-
-
-# Define a function to calculate the SMA for a given number of periods
-def calculate_sma(symbol, period=200, interval='60min', type='close'):
-    # Remove the '/' from Crypto name such as BTC/USD and convert to BTCUSD
-    ticker_symbol = symbol.replace("/", "")
-    # Build the API request string
-    url = f'https://www.alphavantage.co/query?function=SMA&symbol={ticker_symbol}&interval={interval}' \
-          f'&time_period={period}&series_type={type}&apikey={ALPHA_VANTAGE_API_KEY}'
-    # Send the request
-    response = requests.get(url)
-    data = response.json()
-    # Get the result data
-    df = pd.DataFrame.from_dict(data[f'Technical Analysis: SMA'], orient='index')
-
-    df = df.astype(float)
-    sma = df['SMA']
-    return sma
-
-
-# Define a function to calculate the RSI for a given number of periods
-def calculate_rsi(symbol, period=200, interval='60min', type='close'):
-    # Remove the '/' from Crypto name such as BTC/USD and convert to BTCUSD
-    ticker_symbol = symbol.replace("/", "")
-    # Build the API request string
-    url = f'https://www.alphavantage.co/query?function=RSI&symbol={ticker_symbol}&interval={interval}' \
-          f'&time_period={period}&series_type={type}&apikey={ALPHA_VANTAGE_API_KEY}'
-    # Send the request
-    response = requests.get(url)
-    data = response.json()
-    # Get the result data
-    df = pd.DataFrame.from_dict(data[f'Technical Analysis: RSI'], orient='index')
-
-    df = df.astype(float)
-    rsi = df['RSI']
-    return rsi
 
 
 # Check if the stock market is open or closed
@@ -263,7 +363,8 @@ def is_market_open(symbol, time_zone='US/Eastern'):
 
 
 def get_historical_price_data(symbol, **kwargs):
-    reverse_data = True
+    super_trend = []
+    reverse_data = False
     # Get the arguments
     interval = kwargs.get('interval', '60min')
     time_series = kwargs.get('time_series', 'INTRADAY')
@@ -301,15 +402,23 @@ def get_historical_price_data(symbol, **kwargs):
                 bars = client.get_stock_bars(request_params).df
                 break
 
+        raw_data = bars
+        st_bars = bars
+        # in_uptrend = calculate_supertrend(st_bars)
+        latest_super_trend, super_trend, hist_super_trend = \
+            generate_super_trend_signals(st_bars,
+                                         calculate_supertrend(st_bars))
+        powerx_signal = generate_powerx_signal(st_bars)
+
         if get_all_prices == False:
             bars = bars[['close']]
             bars.columns = ['price']
-            return bars, reverse_data
+            return powerx_signal, latest_super_trend, super_trend, hist_super_trend, bars, reverse_data, raw_data
         else:
             bars = bars.drop(columns=['volume'])
             bars = bars.drop(columns=['vwap'])
             bars = bars.drop(columns=['trade_count'])
-            return bars, reverse_data
+            return powerx_signal, latest_super_trend, super_trend, hist_super_trend, bars, reverse_data, raw_data
 
     elif sec_type == 'Crypto':
         reverse_data = False
@@ -331,87 +440,33 @@ def get_historical_price_data(symbol, **kwargs):
         while conn == 0:
             try:
                 bars = client.get_crypto_bars(request_params).df
-                conn +=1
+                conn += 1
             except:
                 time.sleep(1)
                 bars = client.get_crypto_bars(request_params).df
                 break
 
+        raw_data = bars
+        st_bars = bars
+        # in_uptrend = calculate_supertrend(st_bars)
+        latest_super_trend, super_trend, hist_super_trend = \
+            generate_super_trend_signals(st_bars,
+                                         calculate_supertrend(st_bars))
+        powerx_signal = generate_powerx_signal(st_bars)
+
         if not get_all_prices:
             bars = bars[['close']]
             bars.columns = ['price']
-            return bars, reverse_data
+            return powerx_signal, latest_super_trend, super_trend, hist_super_trend, bars, reverse_data, raw_data
         else:
             bars = bars.drop(columns=['volume'])
             bars = bars.drop(columns=['vwap'])
             bars = bars.drop(columns=['trade_count'])
-            return bars, reverse_data
+            return powerx_signal, latest_super_trend, super_trend, hist_super_trend, bars, reverse_data, raw_data
 
     else:
-        return f'ERROR: the Symbol {symbol} can not be found', False
-    # print(url)
-    again = 1
-    while (again):
-        response = requests.get(url)
-        data = response.json()
-        output = json.dumps(data)
-        if "error" in output.lower():
-            time.sleep(1 * 60)
-            pass
-        else:
-            again = 0
-
-    # get current UTC time
-    utc_now = datetime.now(pytz.utc)
-    # format the UTC time as a string
-    utc_time_str = utc_now.strftime('%Y-%m-%d %H:%M:%S %Z')
-    print(f"{symbol} --> Iteration ...{utc_time_str}")
-
-    parse_str = 'Daily'
-    if time_series == 'INTRADAY':
-        parse_str = interval
-    elif time_series == 'WEEKLY':
-        parse_str = 'Weekly'
-    elif time_series == 'MONTHLY':
-        parse_str = 'Monthly'
-
-    if sec_type == 'Stock':
-        df = pd.DataFrame.from_dict(data[f'Time Series ({parse_str})'], orient='index')
-    if sec_type == 'Crypto':
-        try:
-            df = pd.DataFrame.from_dict(data[f'Time Series Crypto ({parse_str})'], orient='index')
-        except:
-            print(f"1 ==> {url}")
-            print(f"2 ==> {data}")
-            print(f'3 ==> Time Series Crypto ({parse_str})')
-
-    df = df.astype(float)
-
-    # Assuming you have a DataFrame called 'df' with the mentioned column names
-    column_names = list(df.columns)
-    # Remove the numeric prefixes from the column names
-    new_column_names = [name.split('. ')[1] for name in column_names]
-    # Assign the new column names to the DataFrame
-    df.columns = new_column_names
-
-    # Calculate the True Range
-    # df['true_range'] = true_range(df['high'], df['low'], df['close'])
-    # super_df = supertrend(df)
-
-    if not get_all_prices:
-        df = df[['close']]
-        df.columns = ['price']
-        return df, reverse_data
-    else:
-        # Remove the Volume column
-        df = df.drop(columns=['volume'])
-        # Reverse the rows make the last first and the first last so that the data
-        # goes from oldest at the top  to newest at the bottom
-        reversed_df = df.iloc[::-1].reset_index(drop=False)
-        # reversed_df['row'] = reversed_df.index
-        # df['row'] = range(len(df))
-
-        return reversed_df, reverse_data
+        print(f'ERROR: the Symbol {symbol} can not be found')
+        return 0, 0, 0, 0, 0, False, 0
 
 
 def get_the_trend(symbol, **kwargs) -> pd.DataFrame:
@@ -422,10 +477,12 @@ def get_the_trend(symbol, **kwargs) -> pd.DataFrame:
     default_to_currency = kwargs.get('default_to_currency', 'USD')
 
     # Get historical data from Alpha Vantage API
-    close, reverse = get_historical_price_data(symbol, interval=interval,
-                                               time_series=time_series,
-                                               get_all_prices=get_all_prices,
-                                               default_to_currency=default_to_currency)
+    powerx_signal, latest_super_trend, super_trend, hist_super_trend, close, reverse, raw_data = \
+        get_historical_price_data(symbol,
+                                  interval=interval,
+                                  time_series=time_series,
+                                  get_all_prices=get_all_prices,
+                                  default_to_currency=default_to_currency)
     # rename the price column close
     close.columns = ['close']
 
@@ -466,23 +523,26 @@ def get_the_trend(symbol, **kwargs) -> pd.DataFrame:
     buy_signal['close'] = buy_signal['close'].replace({False: '', True: 'Buy'})
     sell_signal['close'] = sell_signal['close'].replace({False: '', True: 'Sell'})
 
-    close['sig'] = buy_signal['close'] + sell_signal['close']
+    cl = close.copy()
+    cl['sig'] = buy_signal['close'] + sell_signal['close']
+    # for i, row in close.iterrows():
+    #     cl.loc[i, 'sig'] = buy_signal.loc[i, 'close'] + sell_signal.loc[i, 'close']
 
     # add new column 'signal'
-    close['signal'] = ''
+    cl['signal'] = ''
 
     # loop through rows and populate 'signal' column
     buy_seen = False
     sell_seen = False
     sig_history_list = []
-    for i, row in close.iterrows():
+    for i, row in cl.iterrows():
         if (row['sig'] == 'Buy') & (buy_seen == False):
-            close.loc[i, 'signal'] = 'Buy'
+            cl.loc[i, 'signal'] = 'Buy'
             sig_history_list.append('Buy')
             buy_seen = True
             sell_seen = False
         elif (row['sig'] == 'Sell') & (sell_seen == False):
-            close.loc[i, 'signal'] = 'Sell'
+            cl.loc[i, 'signal'] = 'Sell'
             sig_history_list.append('Sell')
             sell_seen = True
             buy_seen = False
@@ -492,7 +552,7 @@ def get_the_trend(symbol, **kwargs) -> pd.DataFrame:
         else:
             continue  # ignore cells with empty strings
 
-    return close, sig_history_list
+    return raw_data, cl, sig_history_list, latest_super_trend, super_trend, hist_super_trend, powerx_signal
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -535,14 +595,16 @@ def money_management(symbol, stock_price, fraction_to_buy=1, buy_sell='buy',
     max_trade_amount = (account_balance * max_per_account) - total_open_order_amount - total_open_position_amount
 
     if max_trade_amount < max_amount_per_trade:
-        print(
-            f'max_trade_amount = ( account_balance * max_per_account ) - ( total_open_order_amount - total_open_position_amount )')
-        print(
-            f'{round(max_trade_amount, 2)} = ( {round(account_balance, 2)} * {max_per_account} ) - ( {round(total_open_order_amount, 2)} - {total_open_position_amount} ) ')
-        print(f"Not enough available cash to make a new trade at {round(stock_price, 2)}")
-        print(f"Account Balance =  {round(account_balance, 2)}")
-        print(f"max_trade_amount=  {round(max_trade_amount, 2)}")
-        print(f"Max available per Trade =  {round(max_amount_per_trade, 2)}")
+        print(f"SKIPPING {symbol} ... Not enough available cash to make a new trade at {round(stock_price, 4)}")
+        if print_additional_log:
+            print(
+                f'max_trade_amount = ( account_balance * max_per_account ) - '
+                f'( total_open_order_amount - total_open_position_amount )')
+            print(f'{round(max_trade_amount, 4)} = ( {round(account_balance, 4)} * {max_per_account} ) - '
+                  f'( {round(total_open_order_amount, 4)} - {total_open_position_amount} ) ')
+            print(f"Account Balance =  {round(account_balance, 4)}")
+            print(f"max_trade_amount=  {round(max_trade_amount, 4)}")
+            print(f"Max available per Trade =  {round(max_amount_per_trade, 4)}")
         return None
 
     # Calculate the actual amount of money to spend on this trade
@@ -559,7 +621,7 @@ def money_management(symbol, stock_price, fraction_to_buy=1, buy_sell='buy',
             # Calculate the actual amount of money to spend on this trade
             actual_trade_amount = min(max_trade_amount, max_amount_per_trade)
             # Calculate the actual number of shares to buy
-            actual_shares_to_buy = round(price_paid_per_share / stock_price, 2)
+            actual_shares_to_buy = round(price_paid_per_share / stock_price, 4)
         else:
             actual_shares_to_buy = int(max_amount_per_trade / stock_price)
     else:
@@ -582,70 +644,80 @@ def money_management(symbol, stock_price, fraction_to_buy=1, buy_sell='buy',
         print(f" money_management: Please specify the direction - Buy or Sell")
         return None
 
-    total_cost = round(actual_shares_to_buy * price_paid_per_share)
+    total_cost = round(actual_shares_to_buy * price_paid_per_share, 4)
 
-    print(
-        f"\r\n account balance = {round(account_balance, 2)} "
-        f"\r\n max_trade_amount = account_balance * max_per_account - total_open_order_amount - total_open_position_amount "
-        f"\r\n {round(max_trade_amount, 2)} = {round(account_balance, 2)} * {max_per_account} - "
-        f"{total_open_order_amount} - {total_open_position_amount} "
-        f"\r\n max_trade_amount < max_amount_per_trade "
-        f"\r\n {round(max_trade_amount, 2)} < {round(max_amount_per_trade, 2)} "
-        f"\r\n actual_trade_amount < price_paid_per_share "
-        f"\r\n {round(actual_trade_amount, 2)} < {round(price_paid_per_share, 2)} "
-        f"\r\n Market TREND = {buy_sell} "
-        f"\r\n Number of Shares to buy = {actual_shares_to_buy} at price = {round(price_paid_per_share, 2)}"
-        f"\r\n Total Cost for this trade = {total_cost}"
-        f"\r\n Stock Price = {round(stock_price, 2)} "
-        f"\r\n Spend Limit  = {round(max_amount_per_trade, 2)} "
-        f"\r\n stop_loss = {round(stop_loss_price, 2)} "
-        f"\r\n take_profit = {round(take_profit_price, 2)}")
+    if print_additional_log:
+        print(
+            f"\r\n account balance = {round(account_balance, 4)} "
+            f"\r\n max_trade_amount = account_balance * max_per_account - total_open_order_amount - "
+            f"total_open_position_amount "
+            f"\r\n {round(max_trade_amount, 4)} = {round(account_balance, 4)} * {max_per_account} - "
+            f"{total_open_order_amount} - {total_open_position_amount} "
+            f"\r\n max_trade_amount < max_amount_per_trade "
+            f"\r\n {round(max_trade_amount, 4)} < {round(max_amount_per_trade, 4)} "
+            f"\r\n actual_trade_amount < price_paid_per_share "
+            f"\r\n {round(actual_trade_amount, 4)} < {round(price_paid_per_share, 4)} "
+            f"\r\n Market TREND = {buy_sell} "
+            f"\r\n Number of Shares to buy = {actual_shares_to_buy} at price = {round(price_paid_per_share, 4)}"
+            f"\r\n Total Cost for this trade = {total_cost}"
+            f"\r\n Stock Price = {round(stock_price, 4)} "
+            f"\r\n Spend Limit  = {round(max_amount_per_trade, 4)} "
+            f"\r\n stop_loss = {round(stop_loss_price, 4)} "
+            f"\r\n take_profit = {round(take_profit_price, 4)}")
     return account_balance, actual_shares_to_buy, stock_price, price_paid_per_share, stop_loss_price, take_profit_price
 
 
-def api_get_current_price(api_key, api_secret, api_base_url, symbol):
-    headers = {'APCA-API-KEY-ID': api_key, 'APCA-API-SECRET-KEY': api_secret}
-    asset_class = 'crypto'
-    asset_class = get_security_type(symbol)
-    # Make the request
-    url = f'https://data.alpaca.markets/v2/stocks/{symbol}/trades/latest'
-    if asset_class.lower() == 'crypto':
-        url = f'https://data.alpaca.markets/v1beta3/crypto/us/latest/quotes?symbols={symbol}'
-    idx = 0
-    while idx < 4:
-        idx += 1
-        try:
-            response = requests.get(url, headers=headers)
-            break
-        except:
+def api_get_current_price(api_key, api_secret, api_base_url, symbol, signal):
+    api = tradeapi.REST(api_key, api_secret, api_base_url, api_version='v2')
+    type = 'crypto'
+    try:
+        type = get_security_type(symbol)
+    except:
+        pass
+    try:
+        if type.lower() == 'crypto':
+            symbol_list = [symbol]
+            quote = api.get_latest_crypto_quotes(symbol_list)
+        else:
+            quote = api.get_latest_quote(symbol)
+    except Exception as e:
+        print(e)
+        idx = 1
+        while idx < 4:
+            idx += 1
+            time.sleep(1)
             try:
-                response = requests.get(url, headers=headers)
+                if type.lower() == 'crypto':
+                    symbol_list = [symbol]
+                    quote = api.get_latest_crypto_quotes(symbol_list)
+                else:
+                    quote = api.get_latest_quote(symbol)
                 break
             except:
                 pass
+        if idx >= 4:
+            if symbol in saved_previous_price:
+                print(
+                    f'[{symbol}] an error occurred while fetching the price. '
+                    f'Returned previous price ${saved_previous_price[symbol]}')
+                return saved_previous_price[symbol]
 
-    if response.status_code != 200:
-        idx = 0
-        while idx < 2:
-            idx += 1
-            response = requests.get(url, headers=headers)
-
-    # Parse the response
-    if response.status_code == 200:
-        data = response.json()
-        if asset_class.lower() == 'crypto':
-            current_price = data['quotes'][symbol]['ap']
+    if str(signal).lower() == 'sell':
+        if type.lower() == 'crypto':
+            bid_price = quote[symbol].bp
         else:
-            current_price = data['trade']['p']
-        saved_previous_price[symbol] = current_price
-        return current_price
+            bid_price = quote.bp
+
+        saved_previous_price[symbol] = round(bid_price, 4)
+        return round(bid_price, 4)
     else:
-        if symbol in saved_previous_price:
-            print(f'[{symbol}] an error occurred while fetching the price. Returned previous price ${saved_previous_price[symbol]}')
-            return saved_previous_price[symbol]
+        if type.lower() == 'crypto':
+            ask_price = quote[symbol].ap
         else:
-            print(f'[{symbol}] an error occurred while fetching the price Returned $0.00')
-            return 0.00
+            ask_price = quote.ap
+
+        saved_previous_price[symbol] = round(ask_price, 4)
+        return round(ask_price, 4)
 
 
 class BracketOrder:
@@ -664,17 +736,6 @@ class BracketOrder:
         self.buy_order = ''
         self.trading_client = TradingClient(self.api_key, self.api_secret)
 
-    def old_submit_order(self, side, type, price, quantity=1, order_id=''):
-        return self.api.submit_order(
-            symbol=self.symbol,
-            qty=quantity,
-            side=side,
-            type=type,
-            client_order_id=order_id,
-            time_in_force='gtc',
-            limit_price=round(price, 2)
-        )
-
     def submit_order(self, side, type, price, quantity=1, order_id=''):
         return self.api.submit_order(
             symbol=self.symbol,
@@ -682,7 +743,8 @@ class BracketOrder:
             side=side,
             type=type,
             client_order_id=order_id,
-            time_in_force='gtc'
+            time_in_force='gtc',
+            limit_price=round(price, 4)
         )
 
     def submit_limit_order(self, side, type, price, stop_price, quantity=1):
@@ -693,67 +755,80 @@ class BracketOrder:
             type=type,
             time_in_force='gtc',
             stop_price=stop_price,
-            limit_price=round(price, 2)
+            limit_price=round(price, 4)
         )
 
     def monitor_order(self, order, lock):
+        def close_position():
+            try:
+                position = self.api.get_position(self.symbol.replace('/', ''))
+                self.api.close_position(position.symbol, qty=position.qty)
+            except:
+                pass
+
         with lock:
-            # Once the buy order is filled, send stop-loss and take-profit orders
-            while str(order.status).lower() != 'filled' and str(order.status).lower() != 'new':
+            while str(order.status).lower() not in ['filled', 'new']:
                 order = self.api.get_order(order.id)
                 time.sleep(1)
-        print(f'{self.symbol} ... ORDER Status = {order.status} ...')
+            print(f'{self.symbol} ... ORDER Status = {order.status} ...')
 
         # Monitor the status of the stop-loss and take-profit orders
         ct = 0
         with lock:
             while True:
-                ct = ct + 1
-                cprice = 0
-                try:
-                    cprice = api_get_current_price(api_key, api_secret, api_base_url, self.symbol)
-                    cprice = round(float(cprice), 2)
-                except:
-                    cprice = api_get_current_price(api_key, api_secret, api_base_url, self.symbol)
-                    cprice = round(float(cprice), 2)
+                ct += 1
 
-                # Check the indicator to determine the current trend
-                df1, df1_hist = get_the_trend(self.symbol, time_series='INTRADAY', interval='30min')
-                # get the current signal
-                signal = df1.iloc[-1]['signal']
+                try:
+                    raw_data, df1, df1_hist, latest_super_trend, super_trend, hist_super_trend, powerx_signal = \
+                        get_the_trend(self.symbol, time_series='INTRADAY', interval='30min')
+                except:
+                    time.sleep(1)
+                    try:
+                        raw_data, df1, df1_hist, latest_super_trend, super_trend, hist_super_trend, powerx_signal = \
+                            get_the_trend(self.symbol, time_series='INTRADAY', interval='30min')
+                    except:
+                        time.sleep(5)
+                        continue
+
+                signal = df1.iloc[-1]['sig']
                 prev_signal = df1_hist[-2]
 
-                if signal != '' and prev_signal != signal:
-                    position = self.api.get_position(self.symbol.replace('/', ''))
-                    self.api.close_position(position.symbol, qty=position.qty)
-                    break
+                try:
+                    cprice = round(float(api_get_current_price(api_key, api_secret,
+                                                               api_base_url, self.symbol, self.side)), 4)
+                except:
+                    try:
+                        cprice = round(float(api_get_current_price(api_key, api_secret,
+                                                                   api_base_url, self.symbol, self.side)), 4)
+                    except:
+                        time.sleep(25 * 60)
+                        continue
 
-                if (cprice >= self.take_profit_price or cprice <= self.stop_loss_price) and str(
-                        order.status).lower() != 'new':
-                    if cprice >= self.take_profit_price:
-                        print(f'{self.symbol} --- PROFIT --- @ {cprice}')
-                    else:
-                        print(f'{self.symbol} --- LOSS --- @ {cprice}')
-                    print(f'{ct}:  => Current {self.symbol} price ==> {cprice} ==> status = {order.status} '
-                          f'Waiting for -->  stop_loss_order @ {self.stop_loss_price} '
-                          f'" OR  '
-                          f'take_profit_order @ {self.take_profit_price} "')
+                order_status_not_new = str(order.status).lower() != 'new'
+                if str(self.side).lower() == 'buy':
+                    order_met = (cprice >= self.take_profit_price) or (cprice <= self.stop_loss_price)
+                elif str(self.side).lower() == 'sell':
+                    order_met = (cprice <= self.take_profit_price) or (cprice >= self.stop_loss_price)
 
-                    position = self.api.get_position(self.symbol.replace('/', ''))
-                    self.api.close_position(position.symbol, qty=position.qty)
+                if (order_status_not_new and order_met) or (str(super_trend).lower() != str(self.side).lower()):
+                    close_position()
+                    if str(self.side).lower() == 'buy':
+                        result = 'PROFIT' if cprice >= self.take_profit_price else 'LOSS'
+                    elif str(self.side).lower() == 'sell':
+                        result = 'PROFIT' if cprice <= self.take_profit_price else 'LOSS'
+                    print(f'{self.symbol} position closes with a ---> {result} <--- @ ---> ${cprice} <---')
 
-                    time.sleep(1)
-                    break
-                else:
-                    print(f'{ct}:  => Current {self.symbol} price ==> {cprice} ==> status = {order.status} '
-                          f'Waiting for -->  stop_loss_order @ {self.stop_loss_price} '
-                          f'" OR  '
-                          f'take_profit_order @ {self.take_profit_price} "')
-                    time.sleep(1)
+                print(f'{ct}:  => Current {self.symbol} price ==> {cprice} ==> status = {order.status} '
+                      f'Waiting for -->  stop_loss_order @ {self.stop_loss_price} '
+                      f'" OR  '
+                      f'take_profit_order @ {self.take_profit_price} "')
+
+                time.sleep(25 * 60)
 
     def execute(self):
+        current_buy_price = api_get_current_price(api_key, api_secret, api_base_url, self.symbol, self.side)
         # Send initial buy order
-        self.buy_order = self.submit_order(self.side, 'market', self.buy_price, self.quantity, self.id)
+        self.buy_order = self.submit_order(self.side, 'limit', current_buy_price, self.quantity, self.id)
         # Monitor the status of the buy order
         # create shared lock
         lock = Lock()
@@ -773,7 +848,7 @@ def close_all_active_trades(api):
     api = tradeapi.REST(api_key, api_secret, api_base_url, api_version='v2')
     counter = 0
     print('CLOSING ALL OPEN POSITIONS AND ORDERS ...')
-    while counter < 3:
+    while counter < 2:
         counter += 1
         api.close_all_positions()
         time.sleep(2)
@@ -782,18 +857,12 @@ def close_all_active_trades(api):
     print('COMPLETED CLOSING ALL OPEN POSITIONS AND ORDERS')
 
 
-if __name__ == '__main__':
-    # initialize the api
-    api = tradeapi.REST(api_key, api_secret, api_base_url, api_version='v2')
-    # Close all active trades
-    close_all_active_trades(api)
-    while True:
-        # initialize the lists
-        assets = ['COMM', 'AAPL', 'TSLA', 'ETH/USD', 'SPY', 'BTC/USD', 'INTC']
-        # assets = ['BTC/USD']
-        threads = []
-        trends = []
+def trade(api, assets, threads, lock):
+    # create shared lock
+    # with lock:
+    #     while True:
 
+    with lock:
         # initialize other variables
         # get current UTC time
         utc_now = datetime.now(pytz.utc)
@@ -815,33 +884,58 @@ if __name__ == '__main__':
                 client_id = "order_" + str(uuid.uuid4().hex)
 
                 # Check the indicator to determine the current trend
-                df1, df1_hist = get_the_trend(symbol, time_series='INTRADAY', interval='30min')
+                raw_data, df1, df1_hist, latest_super_trend, super_trend, hist_super_trend, powerx_trend = \
+                    get_the_trend(symbol, time_series='INTRADAY', interval='30min')
+
                 # get the current signal
-                signal = df1.iloc[-1]['signal']
-                # get the previous signal
+                signal = df1.iloc[-1]['sig']
                 prev_signal = df1_hist[-2]
-                print(f'{symbol} Current trend = {signal} and previous trend = {prev_signal}')
+
+                # if signal == '':
+                #     signal = prev_signal
+
+                print(
+                    f'{symbol} Current trend = {signal} and '
+                    f'SUPER_TREND = {super_trend} and '
+                    f'PowerX_trend = {powerx_trend}')
+
+                # signal = latest_super_trend
+
                 # if no current signal is given use the previous
-                if signal == '':
-                    signal = prev_signal
+                # if signal == '':
+                #     signal = super_trend
+                # elif super_trend != '':
+                #     signal = super_trend
+                # elif signal != '' and super_trend == '':
+                #     signal = signal
+                # elif signal == '' and super_trend != '':
+                #     signal = super_trend
 
                 asset = api.get_asset(symbol)
                 shortable = getattr(asset, 'shortable')
                 easy_to_borrow = getattr(asset, 'easy_to_borrow')
 
-                if (shortable == 'False' or easy_to_borrow == 'False') and str(signal).lower() == 'sell':
+                if (not shortable or not easy_to_borrow) and (str(signal).lower() == 'sell' and
+                                                              str(super_trend).lower() == 'sell' and str(
+                            powerx_trend).lower() == 'sell'):
                     print(f'This ASSET -> {symbol} can not be shorted .. SKIPPING purchase')
                     continue
 
-                if str(signal).lower() == 'buy' or str(signal).lower() == 'sell':
+                if (str(signal).lower() == 'buy' and
+                    str(super_trend).lower() == 'buy' and
+                    str(powerx_trend).lower() == 'buy') or \
+                        (str(signal).lower() == 'sell' and
+                         str(super_trend).lower() == 'sell' and
+                         str(powerx_trend).lower() == 'sell'):
                     # skip if asset in your portfolio.
                     if is_asset_in_pofolio(api, symbol):
                         print(f'ASSET -> {symbol} already exist in your portfolio .. SKIPPING purchase')
                         continue
 
                     # Get the current asset price
-                    symbol_price = api_get_current_price(api_key, api_secret, api_base_url, symbol)
-
+                    symbol_price = api_get_current_price(api_key, api_secret, api_base_url, symbol, signal)
+                    resistances = find_resistances(raw_data)
+                    supports = find_supports(raw_data)
 
                     account_balance, \
                         actual_shares_to_buy, \
@@ -849,46 +943,71 @@ if __name__ == '__main__':
                         price_paid_per_share, \
                         stop_loss_price, \
                         take_profit_price = \
-                        money_management(symbol, symbol_price, 1, signal, 0.2, 0.02, 0.01, 0.02 )
+                        money_management(symbol, symbol_price, 1, signal, 0.2, 0.02, stop_precentage, profit_percentage)
 
-                    print(f'-----------------------------------------------------------------------')
-                    print(f'{symbol}')
-                    print(f'Signal = {signal}  Prev+Signal = {prev_signal}')
-                    print(f'symbol_price ==> {round(symbol_price, 2)}')
-                    print(f'stop_price ==> {round(stop_loss_price)}')
-                    print(f'teke_profit_limit_price ==> {round(take_profit_price, 2)}')
-                    print(f'DIFF to LOSS ==> {round(symbol_price - stop_loss_price, 2)}')
-                    print(f'DIFF to GAIN ==> {round(take_profit_price - symbol_price, 2)}')
-                    print(f'\r')
+                    # print(f'-----------------------------------------------------------------------')
+                    # print(f'{symbol}')
+                    # print(f'Signal = {signal}  Prev+Signal = {prev_signal}')
+                    # print(f'symbol_price ==> {round(symbol_price, 4)}')
+                    # print(f'stop_price ==> {round(stop_loss_price)}')
+                    # print(f'teke_profit_limit_price ==> {round(take_profit_price, 4)}')
+                    # print(f'DIFF to LOSS ==> {round(symbol_price - stop_loss_price, 4)}')
+                    # print(f'DIFF to GAIN ==> {round(take_profit_price - symbol_price, 4)}')
+                    # print(f'\r')
 
-                    if signal == 'Buy':
-                        message = f'Bought <{symbol}> @ ${round(symbol_price, 2)} stop price = ${round(stop_loss_price, 2)}  take profit = ${round(take_profit_price, 2)} @ {utc_time_str}'
+                    if str(signal).lower() == 'buy':
+                        message = f'Bought {actual_shares_to_buy} <{symbol}> @ ${round(symbol_price, 4)} ' \
+                                  f'stop price = ${round(stop_loss_price, 4)}  ' \
+                                  f'take profit = ${round(take_profit_price, 4)} @ {utc_time_str}'
                         print(message)
-                    elif signal == 'Sell':
-                        message = f'Sold  <{symbol}> @ ${round(symbol_price, 2)} stop price = ${round(stop_loss_price, 2)}  take profit = ${round(take_profit_price, 2)} @ {utc_time_str}'
+                    elif str(signal).lower() == 'sell':
+                        message = f'Sold  {actual_shares_to_buy} <{symbol}> @ ${round(symbol_price, 4)} ' \
+                                  f'stop price = ${round(stop_loss_price, 4)}  ' \
+                                  f'take profit = ${round(take_profit_price, 4)} @ {utc_time_str}'
                         print(message)
                     else:
-                        message = f'Nothing Purchased <{symbol}> @ ${round(symbol_price, 2)} stop price = $0.00  take profit = $0.00 @ {utc_time_str}'
+                        message = f'Nothing Purchased <{symbol}> @ ${round(symbol_price, 4)} ' \
+                                  f'stop price = $0.00  take profit = $0.00 @ {utc_time_str}'
                         print(message)
 
                     print(
-                        f"\r\n<0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0>")
-
+                        f"\r\n<0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><"
+                        f"0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0><0>")
 
                     # Create BracketOrder object and execute
                     order = BracketOrder(api, symbol, str(signal).lower(), actual_shares_to_buy, symbol_price,
-                                         round(stop_loss_price, 2),
-                                         round(take_profit_price, 2),
+                                         round(stop_loss_price, 4),
+                                         round(take_profit_price, 4),
                                          client_id)
                     t1 = order.execute()
                     threads.append(t1)
             except Exception as e:
                 print(e)
                 pass
-        for thread in threads:  # iterates over the threads
-            thread.start()  # waits until the thread has finished work
 
-        for thread in threads:  # iterates over the threads
-            thread.join()  # waits until the thread has finished work
 
-        time.sleep(1)
+if __name__ == '__main__':
+    # initialize the api
+    api = tradeapi.REST(api_key, api_secret, api_base_url, api_version='v2')
+    # initialize the lists
+    assets, stop_percent, profit_percent = get_assets_from_csv('assets_to_trade.csv')
+    # the list of all the threads
+    threads = []
+
+    # Close all active trades before starting the program
+    close_all_active_trades(api)
+
+    while True:
+        lock = Lock()
+        trade(api, assets, threads, lock)
+        for thread in threads:  # iterates over the threads
+            try:
+                thread.start()  # waits until the thread has finished work
+            except:
+                pass
+
+        trade_thread = threading.Thread(target=trade, args=(api, assets, threads, lock,))
+        trade_thread.start()
+        threads.append(trade_thread)
+
+        time.sleep(60 * 25)
